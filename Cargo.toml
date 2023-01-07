@@ -1,0 +1,19 @@
+[package]
+name = "telegram-rustreactions-bot"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.68"
+async-trait = "0.1.60"
+demoji = "0.0.3"
+emojito = "0.3.5"
+log = "0.4"
+pretty_env_logger = "0.4"
+rusqlite = { version = "0.28.0", features = ["bundled"] }
+teloxide = { version = "0.11", features = ["macros"] }
+tokio = { version =  "1.8", features = ["rt-multi-thread", "macros"] }
+url = "2.3.1"
+warp = "0.3.3"
