@@ -1,8 +1,10 @@
+#![feature(let_chains)]
 use std::cmp::min;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use demoji::demoji;
+use derive_more::From;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, Statement, ToSql};
 use teloxide::prelude::*;
 use teloxide::requests::JsonRequest;
@@ -14,22 +16,10 @@ use tokio::time::sleep;
 
 const DISPLAY_REMOVE_RANKING_BUTTON: bool = true;
 
-#[derive(Debug)]
+#[derive(From, Debug)]
 pub enum BotError {
     TelegramError(RequestError),
     SqliteError(rusqlite::Error),
-}
-
-impl From<RequestError> for BotError {
-    fn from(error: RequestError) -> Self {
-        BotError::TelegramError(error)
-    }
-}
-
-impl From<rusqlite::Error> for BotError {
-    fn from(error: rusqlite::Error) -> Self {
-        BotError::SqliteError(error)
-    }
 }
 
 struct BotWrapper<'a> {
@@ -88,7 +78,7 @@ impl<'a> BotWrapper<'a> {
                 where timestamp > ? and reaction_msg.chat_id = ? \
                 group by reaction.author_id, reaction.author \
                 order by count(*) desc")?,
-            save_message: connection.prepare("INSERT INTO message (id, original_id, author_id, author, chat_id, parent, is_bot_reaction, is_ranking, is_anon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")?,
+            save_message: connection.prepare("INSERT INTO message (id, original_id, author_id, author, chat_id, parent, is_bot_reaction, is_ranking, is_anon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, FALSE)")?,
         })
     }
 
@@ -193,10 +183,7 @@ impl<'a> BotWrapper<'a> {
         match row {
             Some(id) => self.delete_reaction.execute([id]),
             None => {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as u64;
+                let now = now().as_nanos() as u64;
                 let params = params![author.id.0, author.username, reaction, now, msg_custom_id];
                 self.add_reaction.execute(params)
             }
@@ -205,35 +192,27 @@ impl<'a> BotWrapper<'a> {
     }
 
     async fn handle_callback_query(&mut self, cq: CallbackQuery) -> Result<(), BotError> {
-        match cq.data {
-            None => panic!("co to jest???"),
-            Some(text) => {
-                let msg = cq.message.unwrap();
-                let parent = msg.reply_to_message().unwrap();
-                let msg_custom_id = get_custom_msg_id(msg.chat.id, parent.id);
-                match text.as_str() {
-                    "show_reactions" | "hide_reactions" => {
-                        if text.as_str() == "show_reactions" {
-                            self.show_reactions.execute([msg_custom_id])?;
-                        } else {
-                            self.hide_reactions.execute([msg_custom_id])?;
-                        }
-                        let (markup, text) =
-                            self.get_inline_keyboard(msg_custom_id, true)?.unwrap();
-                        self.bot
-                            .edit_message_text(msg.chat.id, msg.id, text)
-                            .reply_markup(markup)
-                            .await?;
-                        Ok(())
-                    }
-                    "delete_ranking" => self.delete_message(msg.chat.id, msg.id).await,
-                    text => {
-                        self.react_to(parent.id, msg.chat.id, &cq.from, vec![text])
-                            .await
-                    }
-                }
+        let text = cq.data.expect("co to jest???");
+        let msg = cq.message.unwrap();
+        let parent = msg.reply_to_message().unwrap();
+        let msg_custom_id = get_custom_msg_id(msg.chat.id, parent.id);
+        if text == "show_reactions" || text == "hide_reactions" {
+            if text == "show_reactions" {
+                self.show_reactions.execute([msg_custom_id])?;
+            } else {
+                self.hide_reactions.execute([msg_custom_id])?;
             }
+            let (markup, text) = self.get_inline_keyboard(msg_custom_id, true)?.unwrap();
+            self.bot
+                .edit_message_text(msg.chat.id, msg.id, text)
+                .reply_markup(markup)
+                .await?;
+            return Ok(());
+        } else if text == "delete_ranking" {
+            return self.delete_message(msg.chat.id, msg.id).await;
         }
+        self.react_to(parent.id, msg.chat.id, &cq.from, vec![&text])
+            .await
     }
 
     async fn top(&mut self, msg: &Message, text: &str) -> Result<(), BotError> {
@@ -268,18 +247,14 @@ impl<'a> BotWrapper<'a> {
                         .await
                 }
             }
-            if !(1..30).contains(&number_of_messages) {
+            if !(1..=30).contains(&number_of_messages) {
                 return self
                     .reply_to(msg, "Number of messages must be between 1 and 30.")
                     .await;
             }
             number_of_messages *= 3;
         }
-        let min_timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64
-            - days * (24 * 60 * 60 * 1000000000);
+        let min_timestamp = (now() - Duration::from_secs(days * 24 * 60 * 60)).as_nanos() as u64;
 
         let mut query_arguments = vec![
             min_timestamp.to_sql().unwrap(),
@@ -334,11 +309,7 @@ impl<'a> BotWrapper<'a> {
             }
             days = min(days, 10 * 365);
         }
-        let min_timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64
-            - days * (24 * 60 * 60 * 1000000000);
+        let min_timestamp = (now() - Duration::from_secs(days * (24 * 60 * 60))).as_nanos() as u64;
 
         let mut text = format!("Reactions received in the last {days} days\n");
 
@@ -428,8 +399,7 @@ impl<'a> BotWrapper<'a> {
             .reply_to_message()
             .map(|parent| get_custom_msg_id(msg.chat.id, parent.id));
         let author = msg.from().unwrap();
-
-        let params = params![
+        self.save_message.execute(params![
             custom_id,
             msg.id.0,
             author.id.0,
@@ -438,9 +408,7 @@ impl<'a> BotWrapper<'a> {
             parent,
             is_bot_reaction,
             is_ranking,
-            "FALSE"
-        ];
-        self.save_message.execute(params)?;
+        ])?;
         Ok(())
     }
 
@@ -450,18 +418,15 @@ impl<'a> BotWrapper<'a> {
         msg_custom_id: u64,
         expanded: bool,
     ) -> Result<Option<(InlineKeyboardMarkup, String)>, rusqlite::Error> {
-        let reactions_data = self
+        let (reactions_authors, mut inline_keyboard_buttons): (Vec<_>, Vec<_>) = self
             .get_reactions
-            .query_map([msg_custom_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        let (reactions_authors, mut inline_keyboard_buttons): (Vec<_>, Vec<_>) = reactions_data
+            .query_map([msg_custom_id], |row| Ok((row.get(0)?, row.get(1)?)))?
             .map(|reaction_data| {
                 let (reaction_authors, reaction): (String, String) = reaction_data.unwrap();
-                let reaction_text = if reaction == "+1" {
-                    format!("+{}", reaction_authors.matches(',').count() + 1)
-                } else if reaction == "-1" {
-                    format!("-{}", reaction_authors.matches(',').count() + 1)
-                } else {
-                    reaction.clone()
+                let reaction_text = match reaction.as_str() {
+                    "+1" => format!("+{}", reaction_authors.matches(',').count() + 1),
+                    "-1" => format!("-{}", reaction_authors.matches(',').count() + 1),
+                    _ => reaction.clone(),
                 };
                 (
                     reaction_authors,
@@ -486,8 +451,6 @@ impl<'a> BotWrapper<'a> {
         let inline_keyboard_markup = InlineKeyboardMarkup {
             inline_keyboard: inline_keyboard_buttons
                 .chunks(4)
-                .collect::<Vec<_>>()
-                .into_iter()
                 .map(|s| s.to_vec())
                 .collect(),
         };
@@ -530,24 +493,20 @@ fn get_command(text: &str) -> Option<Command> {
 }
 
 async fn handle_update(update: Update, bot: &mut BotWrapper<'_>) -> Result<(), BotError> {
-    // TODO log
     match update.kind {
         UpdateKind::CallbackQuery(cq) => bot.handle_callback_query(cq).await,
         UpdateKind::Message(msg) => {
             bot.save_msg_to_db(&msg, false, false)?;
-            println!("{msg:?}");
             if let Some(text) = msg.text() {
                 match get_command(text) {
                     Some(cmd) => bot.handle_command(cmd, &msg, text).await?,
                     None => {
-                        if let Some(parent_msg) = msg.reply_to_message() {
-                            if let Some(reactions) = get_reactions_from(text) {
+                        if let Some(parent_msg) = msg.reply_to_message() && let Some(reactions) = get_reactions_from(text) {
                                 let author = msg.from().unwrap();
                                 bot.delete_message(msg.chat.id, msg.id).await?;
                                 bot.react_to(parent_msg.id, msg.chat.id, author, reactions)
                                     .await?;
                             }
-                        }
                     }
                 }
             }
@@ -574,6 +533,7 @@ async fn main() -> Result<(), BotError> {
             .await?;
 
         for update in updates {
+            log::info!("{update:?}");
             offset = update.id + 1;
             handle_update(update, bot).await?;
         }
@@ -591,9 +551,7 @@ fn get_reactions_from(text: &str) -> Option<Vec<&str>> {
     let emojis = emojito::find_emoji(text);
     if emojis.len() > 3 {
         return None;
-    }
-    let demojified_text = demoji(text);
-    if !emojis.is_empty() && demojified_text.is_empty() {
+    } else if !emojis.is_empty() && demoji(text).is_empty() {
         let reactions = emojis
             .into_iter()
             .map(|emoji| emoji.glyph)
@@ -621,4 +579,8 @@ fn get_reactions_from(text: &str) -> Option<Vec<&str>> {
     reacts
         .get(text.to_lowercase().as_str())
         .map(|&reaction| vec![reaction])
+}
+
+fn now() -> Duration {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
 }
