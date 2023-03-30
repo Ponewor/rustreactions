@@ -7,10 +7,10 @@ edition = "2021"
 
 [dependencies]
 demoji = "0.0.3"
-derive_more = "0.99.17"
-emojito = "0.3.5"
+derive_more = "0.99"
+emojito = "0.3"
 log = "0.4"
 pretty_env_logger = "0.4"
-rusqlite = { version = "0.28.0", features = ["bundled"] }
-teloxide = { version = "0.11", features = ["macros"] }
-tokio = { version =  "1.8", features = ["rt-multi-thread", "macros"] }
+rusqlite = { version = "0.29", features = ["bundled"] }
+teloxide = { version = "0.12", features = ["macros"] }
+tokio = { version =  "1.27", features = ["rt-multi-thread", "macros"] }
